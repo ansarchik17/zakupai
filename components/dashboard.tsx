@@ -69,9 +69,11 @@ type FormKind = "campaign" | "product" | "order" | "help" | null;
 export function Dashboard({
   initial,
   userName,
+  localPreview = false,
 }: {
   initial: DashboardData | null;
   userName: string;
+  localPreview?: boolean;
 }) {
   const [data, setData] = useState(initial),
     [view, setView] = useState("orders"),
@@ -345,15 +347,17 @@ export function Dashboard({
             <span className="avatar">{userName.slice(0, 1).toUpperCase()}</span>
             <div>
               <strong>{userName}</strong>
-              <small>Мой кабинет</small>
+              <small>{localPreview ? "Локальная версия" : "Мой кабинет"}</small>
             </div>
-            <a
-              href="/signout-with-chatgpt?return_to=%2F"
-              target="_top"
-              aria-label="Выйти"
-            >
-              <LogOut size={16} />
-            </a>
+            {!localPreview ? (
+              <a
+                href="/signout-with-chatgpt?return_to=%2F"
+                target="_top"
+                aria-label="Выйти"
+              >
+                <LogOut size={16} />
+              </a>
+            ) : null}
           </div>
         </div>
       </aside>

@@ -39,13 +39,16 @@ const localBindingConfig = {
 
 export default defineConfig(async ({ command }) => {
   configureToolEnvironment(process.cwd());
+  const localPreview =
+    command === "serve" && process.env.VITE_ZAKUPAI_LOCAL_PREVIEW === "1";
 
   // Wrangler snapshots its log path while the Cloudflare plugin is imported.
   const { cloudflare } = await import("@cloudflare/vite-plugin");
 
   return {
     server: {
-      ...(managedLinux
+      ...(localPreview ? { host: "127.0.0.1", strictPort: true } : {}),
+      ...(managedLinux && !localPreview
         ? { host: "0.0.0.0", allowedHosts: ["terminal.local"] }
         : {}),
       ...(isCodexSeatbeltSandbox
@@ -54,14 +57,17 @@ export default defineConfig(async ({ command }) => {
     },
     plugins: [
       vinext(),
-      sites({ mockAuth: !managedLinux }),
-      connectorPreview(),
+      sites({ mockAuth: !managedLinux && !localPreview }),
+      ...(!localPreview ? [connectorPreview()] : []),
       cloudflare({
+        ...(localPreview
+          ? { persistState: { path: ".wrangler/localhost" } }
+          : {}),
         viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
         inspectorPort: false,
         config: {
           ...localBindingConfig,
-          ...(command === "serve"
+          ...(command === "serve" && !localPreview
             ? {
                 services: [
                   {
@@ -73,7 +79,7 @@ export default defineConfig(async ({ command }) => {
               }
             : {}),
         },
-        ...(command === "serve"
+        ...(command === "serve" && !localPreview
           ? {
               auxiliaryWorkers: [
                 {

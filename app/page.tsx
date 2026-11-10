@@ -8,6 +8,7 @@ export default async function Home() {
     <Dashboard
       initial={await repository().dashboard(user.userId)}
       userName={user.displayName}
+      localPreview={import.meta.env.DEV && user.userId === "local_zakupai"}
     />
   );
 }

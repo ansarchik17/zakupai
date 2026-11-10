@@ -1,5 +1,6 @@
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
+import { localPreviewUser } from "@/lib/local-preview";
 
 export type ChatGPTUser = {
   userId: string;
@@ -20,6 +21,12 @@ const CALLBACK_PATH = "/callback";
 
 export async function getChatGPTUser(): Promise<ChatGPTUser | null> {
   const requestHeaders = await headers();
+  const localUser = localPreviewUser(
+    import.meta.env.DEV,
+    import.meta.env.VITE_ZAKUPAI_LOCAL_PREVIEW === "1",
+    requestHeaders.get("host"),
+  );
+  if (localUser) return localUser;
   const userId = requestHeaders.get(USER_ID_HEADER);
   const email = requestHeaders.get(USER_EMAIL_HEADER);
   if (!userId || !email) return null;
