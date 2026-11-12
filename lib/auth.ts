@@ -6,7 +6,8 @@ import { database } from "./database";
 import { AppError } from "./domain";
 
 export const SESSION_COOKIE = "zakupai_session";
-export const authRepository = () => new AuthRepository(database());
+export const authRepository = () =>
+  new AuthRepository(database(), env.EMAIL_CODE_SECRET);
 export async function bootstrapAdmin() {
   await authRepository().bootstrap({
     email: env.ZAKUPAI_ADMIN_EMAIL,

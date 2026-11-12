@@ -18,7 +18,8 @@
     "test:http": "node tests/http-smoke.mjs",
     "admin:configure": "node scripts/configure-admin.mjs",
     "mail:relay": "node --env-file-if-exists=.env.smtp scripts/smtp-relay.mjs",
-    "test:auth:http": "node tests/auth-http-smoke.mjs"
+    "test:auth:http": "node tests/run-auth-http.mjs",
+    "smtp:configure": "node scripts/configure-smtp.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",

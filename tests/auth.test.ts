@@ -9,7 +9,7 @@ const password = "TestPassword+123";
 const hash = await hashPassword(password);
 async function fixture() {
   const f = testDatabase(),
-    auth = new AuthRepository(f.db);
+    auth = new AuthRepository(f.db, "a".repeat(64));
   await auth.bootstrap({ email: "admin@example.test", hash });
   const admin = await auth.login(
     { email: " ADMIN@example.test ", password },
@@ -22,6 +22,31 @@ async function fixture() {
       workspaceName: "Тестовая группа",
     });
   return { ...f, auth, admin, invite };
+}
+
+async function emailProof(
+  auth: AuthRepository,
+  token: string,
+  client = "test",
+) {
+  let code = "";
+  const response = await auth.requestEmailCode(
+    token,
+    client,
+    async (message) => {
+      code = message.code;
+    },
+  );
+  return { code, challenge: response.challenge };
+}
+async function verifiedAccept(
+  auth: AuthRepository,
+  token: string,
+  input: { password: string },
+  client: string,
+) {
+  const proof = await emailProof(auth, token, client);
+  return auth.accept(token, { ...input, ...proof }, client);
 }
 
 async function deliveredReset(
@@ -51,7 +76,12 @@ test("администратор сохраняет прежнее простр�
   await f.auth.adoptLegacyWorkspace(f.admin.user.id, "legacy-platform-owner");
   assert.equal((await repo.workspace(f.admin.user.id))?.id, legacy.id);
   const invitation = await f.invite(),
-    accepted = await f.auth.accept(invitation.token, { password }, "test"),
+    accepted = await verifiedAccept(
+      f.auth,
+      invitation.token,
+      { password },
+      "test",
+    ),
     organizer = (await f.auth.session(accepted.token))!;
   await assert.rejects(() =>
     f.auth.adoptLegacyWorkspace(organizer.id, f.admin.user.id),
@@ -109,7 +139,12 @@ test("приглашение создаёт отдельное простран�
     f.sqlite.prepare("SELECT token_hash FROM invitations").get()!.token_hash,
     await tokenHash(link.token),
   );
-  const accepted = await f.auth.accept(link.token, { password }, "test"),
+  const accepted = await verifiedAccept(
+      f.auth,
+      link.token,
+      { password },
+      "test",
+    ),
     user = (await f.auth.session(accepted.token))!;
   assert.equal(user.role, "organizer");
   assert.equal(
@@ -126,7 +161,9 @@ test("приглашение создаёт отдельное простран�
   );
   await assert.rejects(() => f.auth.setAccess(user.id, f.admin.user.id, false));
   await assert.rejects(() => f.auth.link(link.token));
-  await assert.rejects(() => f.auth.accept(link.token, { password }, "test"));
+  await assert.rejects(() =>
+    verifiedAccept(f.auth, link.token, { password }, "test"),
+  );
   const overview = await f.auth.overview(f.admin.user.id);
   assert.equal(overview.users.length, 2);
   assert.equal(JSON.stringify(overview).includes(hash), false);
@@ -138,19 +175,24 @@ test("отозванная, просроченная и заменённая с�
     second = await f.invite();
   await assert.rejects(() => f.auth.link(first.token));
   await f.auth.revoke(f.admin.user.id, second.id);
-  await assert.rejects(() => f.auth.accept(second.token, { password }, "test"));
+  await assert.rejects(() =>
+    verifiedAccept(f.auth, second.token, { password }, "test"),
+  );
   const third = await f.invite();
   f.sqlite.prepare("UPDATE invitations SET expires_at='2000-01-01'").run();
-  await assert.rejects(() => f.auth.accept(third.token, { password }, "test"));
+  await assert.rejects(() =>
+    verifiedAccept(f.auth, third.token, { password }, "test"),
+  );
   assert.equal(f.sqlite.prepare("SELECT COUNT(*) n FROM users").get()!.n, 1);
   f.sqlite.close();
 });
 test("одновременное принятие приглашения создаёт только один аккаунт и одно пространство", async () => {
   const f = await fixture(),
     link = await f.invite();
+  const proof = await emailProof(f.auth, link.token);
   const attempts = await Promise.allSettled([
-    f.auth.accept(link.token, { password }, "one"),
-    f.auth.accept(link.token, { password }, "two"),
+    f.auth.accept(link.token, { password, ...proof }, "one"),
+    f.auth.accept(link.token, { password, ...proof }, "two"),
   ]);
   assert.equal(attempts.filter((x) => x.status === "fulfilled").length, 1);
   assert.equal(
@@ -163,7 +205,7 @@ test("одновременное принятие приглашения соз�
 test("отключение немедленно отзывает сессии и ссылки восстановления; нельзя отключить себя", async () => {
   const f = await fixture(),
     link = await f.invite(),
-    accepted = await f.auth.accept(link.token, { password }, "test"),
+    accepted = await verifiedAccept(f.auth, link.token, { password }, "test"),
     user = (await f.auth.session(accepted.token))!;
   const reset = await deliveredReset(f.auth, f.admin.user.id, user.id);
   await f.auth.setAccess(f.admin.user.id, user.id, false);
@@ -185,13 +227,14 @@ test("отключение немедленно отзывает сессии и
 test("восстановление меняет пароль, завершает прежние сеансы и не позволяет повтор ссылки", async () => {
   const f = await fixture(),
     invite = await f.invite(),
-    account = await f.auth.accept(invite.token, { password }, "test"),
+    account = await verifiedAccept(f.auth, invite.token, { password }, "test"),
     user = (await f.auth.session(account.token))!;
   const reset = await deliveredReset(f.auth, f.admin.user.id, user.id);
   assert.equal(reset.recipient, user.email);
   assert.deepEqual(reset.response, { delivery: "sent" });
   assert.equal(JSON.stringify(reset.response).includes(reset.token), false);
-  const changed = await f.auth.accept(
+  const changed = await verifiedAccept(
+    f.auth,
     reset.token,
     { password: "NewPassword+1234" },
     "test",
@@ -207,7 +250,9 @@ test("восстановление меняет пароль, завершает
       "test",
     ),
   );
-  await assert.rejects(() => f.auth.accept(reset.token, { password }, "test"));
+  await assert.rejects(() =>
+    verifiedAccept(f.auth, reset.token, { password }, "test"),
+  );
   f.sqlite.close();
 });
 test("ограничение попыток сохраняется в базе и снимается после окна ожидания", async () => {
@@ -227,7 +272,8 @@ test("администратор не входит с собственным п�
   const f = await fixture(),
     invitation = await f.invite();
   const ownerPassword = "OwnerOnlyPassword+123";
-  const account = await f.auth.accept(
+  const account = await verifiedAccept(
+    f.auth,
     invitation.token,
     { password: ownerPassword },
     "test",
@@ -262,7 +308,12 @@ test("администратор не входит с собственным п�
 test("ошибка отправки письма отзывает восстановление и сохраняет действующий пароль", async () => {
   const f = await fixture(),
     invitation = await f.invite();
-  const account = await f.auth.accept(invitation.token, { password }, "test"),
+  const account = await verifiedAccept(
+      f.auth,
+      invitation.token,
+      { password },
+      "test",
+    ),
     organizer = (await f.auth.session(account.token))!;
   let undeliveredToken = "";
   await assert.rejects(() =>
@@ -280,7 +331,12 @@ test("ошибка отправки письма отзывает восстан
 test("прежние ручные ссылки восстановления без отправки владельцу больше не принимаются", async () => {
   const f = await fixture(),
     invitation = await f.invite();
-  const account = await f.auth.accept(invitation.token, { password }, "test"),
+  const account = await verifiedAccept(
+      f.auth,
+      invitation.token,
+      { password },
+      "test",
+    ),
     organizer = (await f.auth.session(account.token))!;
   const old = await deliveredReset(f.auth, f.admin.user.id, organizer.id);
   f.sqlite
@@ -290,8 +346,131 @@ test("прежние ручные ссылки восстановления бе
     .run();
   await assert.rejects(() => f.auth.link(old.token));
   await assert.rejects(() =>
-    f.auth.accept(old.token, { password: "AnotherPassword+123" }, "test"),
+    verifiedAccept(
+      f.auth,
+      old.token,
+      { password: "AnotherPassword+123" },
+      "test",
+    ),
   );
   assert.ok(await f.auth.login({ email: organizer.email, password }, "test"));
+  f.sqlite.close();
+});
+
+test("одной ссылки и пароля недостаточно: код отправляется только на email приглашения и не возвращается администратору", async () => {
+  const f = await fixture(),
+    invitation = await f.invite();
+  await assert.rejects(() =>
+    f.auth.accept(invitation.token, { password }, "test"),
+  );
+  let recipient = "",
+    code = "";
+  const response = await f.auth.requestEmailCode(
+    invitation.token,
+    "test",
+    async (message) => {
+      recipient = message.email;
+      code = message.code;
+    },
+  );
+  assert.equal(recipient, "organizer@example.test");
+  assert.match(code, /^\d{6}$/);
+  assert.equal("code" in response, false);
+  const row = f.sqlite.prepare("SELECT * FROM email_challenges").get()!;
+  assert.notEqual(row.code_hash, code);
+  assert.notEqual(row.token_hash, response.challenge);
+  await f.auth.accept(
+    invitation.token,
+    { password, code, challenge: response.challenge },
+    "test",
+  );
+  assert.ok(
+    f.sqlite
+      .prepare("SELECT email_verified_at FROM users WHERE email=?")
+      .get(recipient)!.email_verified_at,
+  );
+  f.sqlite.close();
+});
+
+test("после пяти неверных кодов даже правильный код больше не принимается", async () => {
+  const f = await fixture(),
+    invitation = await f.invite(),
+    proof = await emailProof(f.auth, invitation.token);
+  const wrong = String((Number(proof.code) + 1) % 1000000).padStart(6, "0");
+  for (let i = 0; i < 5; i++)
+    await assert.rejects(() =>
+      f.auth.accept(
+        invitation.token,
+        { password, ...proof, code: wrong },
+        "test",
+      ),
+    );
+  await assert.rejects(() =>
+    f.auth.accept(invitation.token, { password, ...proof }, "test"),
+  );
+  assert.equal(f.sqlite.prepare("SELECT COUNT(*) n FROM users").get()!.n, 1);
+  f.sqlite.close();
+});
+
+test("истёкший код не создаёт аккаунт; код нельзя применить к другому приглашению", async () => {
+  const f = await fixture(),
+    first = await f.invite(),
+    proof = await emailProof(f.auth, first.token);
+  const second = await f.auth.invite(f.admin.user.id, {
+    email: "second@example.test",
+    name: "Второй",
+    workspaceName: "Другая группа",
+  });
+  await assert.rejects(() =>
+    f.auth.accept(second.token, { password, ...proof }, "test"),
+  );
+  f.sqlite.prepare("UPDATE email_challenges SET expires_at='2000-01-01'").run();
+  await assert.rejects(() =>
+    f.auth.accept(first.token, { password, ...proof }, "test"),
+  );
+  assert.equal(f.sqlite.prepare("SELECT COUNT(*) n FROM users").get()!.n, 1);
+  f.sqlite.close();
+});
+
+test("повторная отправка ограничена минутой и заменяет прежний код", async () => {
+  const f = await fixture(),
+    invitation = await f.invite(),
+    first = await emailProof(f.auth, invitation.token);
+  await assert.rejects(
+    () => emailProof(f.auth, invitation.token),
+    (e: unknown) => e instanceof Error && "status" in e && e.status === 429,
+  );
+  f.sqlite.prepare("DELETE FROM auth_limits").run();
+  const next = await emailProof(f.auth, invitation.token);
+  await assert.rejects(() =>
+    f.auth.accept(invitation.token, { password, ...first }, "test"),
+  );
+  assert.ok(
+    await f.auth.accept(invitation.token, { password, ...next }, "test"),
+  );
+  f.sqlite.close();
+});
+
+test("код из неотправленного письма и отозванного приглашения не проходит", async () => {
+  const f = await fixture(),
+    invitation = await f.invite();
+  let undelivered = "";
+  await assert.rejects(() =>
+    f.auth.requestEmailCode(invitation.token, "test", async (message) => {
+      undelivered = message.code;
+      throw new Error("SMTP unavailable");
+    }),
+  );
+  const row = f.sqlite.prepare("SELECT * FROM email_challenges").get()!;
+  assert.equal(row.delivered_at, null);
+  assert.ok(row.consumed_at);
+  assert.notEqual(row.code_hash, undelivered);
+  f.sqlite.prepare("DELETE FROM auth_limits").run();
+  const proof = await emailProof(f.auth, invitation.token);
+  await f.auth.revoke(f.admin.user.id, invitation.id);
+  await assert.rejects(() =>
+    f.auth.accept(invitation.token, { password, ...proof }, "test"),
+  );
+  assert.equal(f.sqlite.prepare("SELECT COUNT(*) n FROM users").get()!.n, 1);
   f.sqlite.close();
 });

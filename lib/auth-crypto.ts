@@ -11,6 +11,56 @@ export function randomToken() {
   return hex(crypto.getRandomValues(new Uint8Array(32)));
 }
 
+export function randomEmailCode() {
+  const bytes = new Uint32Array(1);
+  do {
+    crypto.getRandomValues(bytes);
+  } while (bytes[0] >= 4294000000);
+  return String(bytes[0] % 1000000).padStart(6, "0");
+}
+
+async function emailCodeKey(secret: string) {
+  return crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign", "verify"],
+  );
+}
+const codePayload = (invitationId: string, challenge: string, code: string) =>
+  encoder.encode(JSON.stringify([invitationId, challenge, code]));
+export async function emailCodeHash(
+  secret: string,
+  invitationId: string,
+  challenge: string,
+  code: string,
+) {
+  return hex(
+    new Uint8Array(
+      await crypto.subtle.sign(
+        "HMAC",
+        await emailCodeKey(secret),
+        codePayload(invitationId, challenge, code),
+      ),
+    ),
+  );
+}
+export async function verifyEmailCode(
+  secret: string,
+  invitationId: string,
+  challenge: string,
+  code: string,
+  expected: string,
+) {
+  return crypto.subtle.verify(
+    "HMAC",
+    await emailCodeKey(secret),
+    unhex(expected),
+    codePayload(invitationId, challenge, code),
+  );
+}
+
 export async function tokenHash(value: string) {
   return hex(
     new Uint8Array(

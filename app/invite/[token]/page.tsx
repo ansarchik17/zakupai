@@ -2,6 +2,7 @@ import { authRepository } from "@/lib/auth";
 import { AppError } from "@/lib/domain";
 import { AcceptInvitation } from "@/components/auth-forms";
 import { Logo } from "@/components/primitives";
+import { mailConfigured } from "@/lib/mail";
 
 export const dynamic = "force-dynamic";
 export default async function Invitation({
@@ -38,6 +39,7 @@ export default async function Invitation({
       name={link.name}
       workspace={link.workspace_name}
       reset={link.kind === "reset"}
+      mailReady={mailConfigured()}
     />
   );
 }

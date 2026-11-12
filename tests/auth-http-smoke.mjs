@@ -12,6 +12,38 @@ for await (const chunk of process.stdin) {
 }
 if (process.stdin.isTTY) process.stdin.setRawMode(false);
 const credentials = JSON.parse(input.trim());
+const inboxUrl = process.env.ZAKUPAI_MAIL_TEST_URL;
+const inboxToken = process.env.ZAKUPAI_MAIL_TEST_TOKEN;
+if (
+  !inboxUrl ||
+  !inboxToken ||
+  !["localhost", "127.0.0.1"].includes(new URL(inboxUrl).hostname)
+)
+  throw new Error(
+    "Запускайте через tests/run-auth-http.mjs с изолированным тестовым почтовым сервером",
+  );
+async function inbox() {
+  const response = await fetch(inboxUrl + "/inbox", {
+    headers: { Authorization: `Bearer ${inboxToken}` },
+  });
+  assert.equal(response.status, 200);
+  return response.json();
+}
+async function ownerEmailProof(token, email) {
+  const result = await api("/api/auth/email-code", {
+    method: "POST",
+    data: { token },
+  });
+  assert.equal("code" in result.body, false);
+  const messages = await inbox(),
+    mail = messages.findLast(
+      (m) => m.to === email && m.subject === "Код подтверждения ZakupAI",
+    );
+  assert.ok(mail, "Код должен прийти владельцу аккаунта");
+  const code = /\n\n(\d{6})\n\n/.exec(mail.text)?.[1];
+  assert.ok(code);
+  return { code, challenge: result.body.challenge };
+}
 const cookieOf = (r) =>
   r.headers
     .getSetCookie()
@@ -73,7 +105,8 @@ assert.ok(
 const overview = await api("/api/admin", { cookie: admin });
 assert.equal(JSON.stringify(overview.body).includes("password_hash"), false);
 const email = `smoke-${crypto.randomUUID()}@example.test`,
-  password = "SmokePassword+123";
+  password = "SmokePassword+123",
+  newPassword = "OwnerChangedPassword+123";
 const created = await api("/api/admin/invitations", {
   method: "POST",
   cookie: admin,
@@ -84,13 +117,39 @@ const created = await api("/api/admin/invitations", {
     sendEmail: false,
   },
 });
-assert.equal(created.body.delivery, "not_sent");
+assert.equal(created.body.delivery, "sent");
 const invitePath = new URL(created.body.url).pathname,
   token = invitePath.split("/").at(-1);
 assert.ok((await api(invitePath)).body.includes("Тестовый организатор"));
-const accepted = await api("/api/auth/accept", {
+await api("/api/auth/accept", {
   method: "POST",
   data: { token, password },
+  status: 400,
+});
+await api("/api/auth/email-code", {
+  method: "POST",
+  data: { token, email: credentials.email },
+  status: 400,
+});
+const proof = await ownerEmailProof(token, email);
+await api("/api/auth/email-code", {
+  method: "POST",
+  data: { token },
+  status: 429,
+});
+await api("/api/auth/accept", {
+  method: "POST",
+  data: {
+    token,
+    password,
+    ...proof,
+    code: String((Number(proof.code) + 1) % 1000000).padStart(6, "0"),
+  },
+  status: 400,
+});
+const accepted = await api("/api/auth/accept", {
+  method: "POST",
+  data: { token, password, ...proof },
 });
 const organizer = cookieOf(accepted.response);
 await api("/api/auth/login", {
@@ -116,7 +175,7 @@ assert.equal(workspace.orders.length, 0);
 assert.ok((await api("/", { cookie: organizer })).body.includes("HTTP тест"));
 await api("/api/auth/accept", {
   method: "POST",
-  data: { token, password },
+  data: { token, password, ...proof },
   status: 404,
 });
 assert.ok((await api(invitePath)).body.includes("Ссылка больше не действует"));
@@ -176,10 +235,29 @@ await api(`/api/orders/${order.id}/payments`, {
 const reset = await api(`/api/admin/users/${user.id}/reset`, {
   method: "POST",
   cookie: admin,
-  status: 503,
 });
 assert.equal("url" in reset.body, false);
 assert.equal("token" in reset.body, false);
+assert.equal(reset.body.delivery, "sent");
+const resetMail = (await inbox()).findLast(
+  (m) => m.to === email && m.subject === "Смена пароля ZakupAI",
+);
+assert.ok(resetMail);
+const resetUrl = /https?:\/\/[^\s]+/.exec(resetMail.text)?.[0];
+assert.ok(resetUrl);
+const resetToken = new URL(resetUrl).pathname.split("/").at(-1);
+await api("/api/auth/accept", {
+  method: "POST",
+  data: { token: resetToken, password: newPassword },
+  status: 400,
+});
+const resetProof = await ownerEmailProof(resetToken, email);
+const changed = await api("/api/auth/accept", {
+  method: "POST",
+  data: { token: resetToken, password: newPassword, ...resetProof },
+});
+const changedSession = cookieOf(changed.response);
+await api("/api/workspace", { cookie: organizer, status: 401 });
 await api(`/api/admin/users/${user.id}`, {
   method: "PATCH",
   cookie: admin,
@@ -203,16 +281,16 @@ await api("/api/admin/invitations", {
   },
   status: 409,
 });
-await api("/api/workspace", { cookie: organizer });
+await api("/api/workspace", { cookie: changedSession });
 await api(`/api/admin/users/${user.id}`, {
   method: "PATCH",
   cookie: admin,
   data: { active: false },
 });
-await api("/api/workspace", { cookie: organizer, status: 401 });
+await api("/api/workspace", { cookie: changedSession, status: 401 });
 await api("/api/auth/login", {
   method: "POST",
-  data: { email, password },
+  data: { email, password: newPassword },
   status: 401,
 });
 await api(`/api/admin/users/${user.id}`, {
@@ -222,7 +300,7 @@ await api(`/api/admin/users/${user.id}`, {
 });
 await api("/api/auth/login", {
   method: "POST",
-  data: { email, password },
+  data: { email, password: newPassword },
 });
 const revocable = (
   await api("/api/admin/invitations", {
@@ -248,7 +326,7 @@ await api(`/api/admin/invitations/${pending.id}`, {
 });
 await api("/api/auth/accept", {
   method: "POST",
-  data: { token: revocableToken, password },
+  data: { token: revocableToken, password, ...proof },
   status: 404,
 });
 // Run the original procurement flow in the same isolated database as well.

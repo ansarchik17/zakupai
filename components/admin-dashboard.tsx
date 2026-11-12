@@ -127,6 +127,7 @@ export function AdminDashboard({
               </p>
             </div>
             <Button
+              disabled={!mailConfigured}
               onClick={() => {
                 setModal(true);
                 setError("");
@@ -170,10 +171,9 @@ export function AdminDashboard({
               <div>
                 <strong>Почта пока не подключена</strong>
                 <p>
-                  Создавайте приглашения и передавайте персональные ссылки
-                  организаторам. После подключения почты их можно будет
-                  отправлять письмом. Восстановление паролей доступно только
-                  через письмо владельцу аккаунта.
+                  Для приглашений и восстановления паролей подключите отправку
+                  писем. Организатор должен подтвердить свой email кодом — одной
+                  ссылки для создания аккаунта недостаточно.
                 </p>
               </div>
             </div>
@@ -318,7 +318,10 @@ export function AdminDashboard({
                     Он задаст свой пароль и получит отдельное пространство для
                     закупок.
                   </p>
-                  <Button onClick={() => setModal(true)}>
+                  <Button
+                    disabled={!mailConfigured}
+                    onClick={() => setModal(true)}
+                  >
                     <Plus size={17} />
                     Создать приглашение
                   </Button>
@@ -444,7 +447,7 @@ export function AdminDashboard({
                     name: form.get("name"),
                     email: form.get("email"),
                     workspaceName: form.get("workspaceName"),
-                    sendEmail: form.get("sendEmail") === "on",
+                    sendEmail: true,
                   },
                 );
                 setModal(false);
@@ -484,15 +487,10 @@ export function AdminDashboard({
                 placeholder="Например, Доступный шоппинг"
               />
             </Field>
-            <label className="checkbox">
-              <input
-                name="sendEmail"
-                type="checkbox"
-                defaultChecked={mailConfigured}
-                disabled={!mailConfigured}
-              />
-              Отправить приглашение на email
-            </label>
+            <p className="muted small-text">
+              Приглашение придёт на указанный email. Для создания кабинета
+              организатору понадобится код из отдельного письма.
+            </p>
             {error && (
               <p role="alert" className="error">
                 {error}

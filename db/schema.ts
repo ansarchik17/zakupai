@@ -163,6 +163,7 @@ export const users = sqliteTable(
       .default("active"),
     createdAt: text("created_at").notNull(),
     lastLoginAt: text("last_login_at"),
+    emailVerifiedAt: text("email_verified_at"),
   },
   (t) => [
     check("user_role_check", sql`${t.role} in ('admin','organizer')`),
@@ -220,4 +221,25 @@ export const authLimits = sqliteTable(
     resetsAt: text("resets_at").notNull(),
   },
   (t) => [index("auth_limit_expiry_idx").on(t.resetsAt)],
+);
+
+export const emailChallenges = sqliteTable(
+  "email_challenges",
+  {
+    tokenHash: text("token_hash").primaryKey(),
+    invitationId: text("invitation_id")
+      .notNull()
+      .references(() => invitations.id),
+    codeHash: text("code_hash").notNull(),
+    createdAt: text("created_at").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    deliveredAt: text("delivered_at"),
+    attempts: integer("attempts").notNull().default(0),
+    consumedAt: text("consumed_at"),
+    consumptionId: text("consumption_id"),
+  },
+  (t) => [
+    index("email_challenge_invitation_idx").on(t.invitationId),
+    index("email_challenge_expiry_idx").on(t.expiresAt),
+  ],
 );

@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   ArrowRight,
@@ -151,15 +151,51 @@ export function AcceptInvitation({
   name,
   workspace,
   reset,
+  mailReady,
 }: {
   token: string;
   email: string;
   name: string;
   workspace: string;
   reset: boolean;
+  mailReady: boolean;
 }) {
   const [busy, setBusy] = useState(false),
-    [error, setError] = useState("");
+    [error, setError] = useState(""),
+    [challenge, setChallenge] = useState<{
+      challenge: string;
+      expiresAt: string;
+      resendAfterSeconds: number;
+    } | null>(null),
+    [code, setCode] = useState(""),
+    [resendAt, setResendAt] = useState(0),
+    [clock, setClock] = useState(() => Date.now());
+  useEffect(() => {
+    if (!challenge) return;
+    const timer = setInterval(() => setClock(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [challenge]);
+  const resendSeconds = Math.max(0, Math.ceil((resendAt - clock) / 1000));
+  const sendCode = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const result = await request<{
+        challenge: string;
+        expiresAt: string;
+        resendAfterSeconds: number;
+      }>("/api/auth/email-code", "POST", { token });
+      const time = Date.now();
+      setClock(time);
+      setResendAt(time + result.resendAfterSeconds * 1000);
+      setChallenge(result);
+      setCode("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Не удалось отправить код");
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <main className="invite-shell">
       <Logo />
@@ -180,76 +216,132 @@ export function AcceptInvitation({
           <span>Email аккаунта</span>
           <strong>{email}</strong>
         </div>
-        <form
-          className="modal-form"
-          onSubmit={async (event) => {
-            event.preventDefault();
-            if (busy) return;
-            const data = new FormData(event.currentTarget);
-            if (data.get("password") !== data.get("confirmation")) {
-              setError("Пароли не совпадают");
-              return;
-            }
-            setBusy(true);
-            setError("");
-            try {
-              const result = await request<{ next: string }>(
-                "/api/auth/accept",
-                "POST",
-                { token, password: data.get("password") },
-              );
-              location.assign(result.next);
-            } catch (e) {
-              setError(
-                e instanceof Error
-                  ? e.message
-                  : "Не удалось принять приглашение",
-              );
-              setBusy(false);
-            }
-          }}
-        >
-          <input
-            type="text"
-            name="username"
-            autoComplete="username"
-            value={email}
-            readOnly
-            hidden
-          />
-          <Field
-            label="Придумайте пароль"
-            hint="Минимум 10 символов. Используйте уникальный пароль."
+        {mailReady ? (
+          <div className="auth-note">
+            <p>
+              {challenge
+                ? "Код отправлен на указанный email. Он действует 10 минут. Если письма нет, проверьте папку «Спам»."
+                : "Подтвердите, что эта почта принадлежит вам. Код придёт только на email из приглашения."}
+            </p>
+            <Button
+              type="button"
+              variant="secondary"
+              className="full"
+              style={{ marginTop: 14 }}
+              busy={busy}
+              disabled={resendSeconds > 0}
+              onClick={sendCode}
+            >
+              {!challenge
+                ? "Получить код на email"
+                : resendSeconds > 0
+                  ? `Отправить повторно через ${resendSeconds} с`
+                  : "Отправить код повторно"}
+            </Button>
+          </div>
+        ) : (
+          <div className="info-banner" style={{ marginTop: 20 }}>
+            Администратор ещё не подключил почту. Подтверждение приглашения
+            станет доступно после настройки отправки писем.
+          </div>
+        )}
+        {error && (
+          <p className="error" role="alert" style={{ marginTop: 16 }}>
+            {error}
+          </p>
+        )}
+        {challenge && (
+          <form
+            className="modal-form"
+            onSubmit={async (event) => {
+              event.preventDefault();
+              if (busy || !challenge) return;
+              const data = new FormData(event.currentTarget);
+              if (data.get("password") !== data.get("confirmation")) {
+                setError("Пароли не совпадают");
+                return;
+              }
+              setBusy(true);
+              setError("");
+              try {
+                const result = await request<{ next: string }>(
+                  "/api/auth/accept",
+                  "POST",
+                  {
+                    token,
+                    password: data.get("password"),
+                    code,
+                    challenge: challenge.challenge,
+                  },
+                );
+                location.assign(result.next);
+              } catch (e) {
+                setError(
+                  e instanceof Error
+                    ? e.message
+                    : "Не удалось принять приглашение",
+                );
+                setBusy(false);
+              }
+            }}
           >
             <input
-              name="password"
-              type="password"
-              autoComplete="new-password"
-              minLength={10}
-              maxLength={128}
-              required
+              type="text"
+              name="username"
+              autoComplete="username"
+              value={email}
+              readOnly
+              hidden
             />
-          </Field>
-          <Field label="Повторите пароль">
-            <input
-              name="confirmation"
-              type="password"
-              autoComplete="new-password"
-              minLength={10}
-              maxLength={128}
-              required
-            />
-          </Field>
-          {error && (
-            <p className="error" role="alert">
-              {error}
-            </p>
-          )}
-          <Button className="full" busy={busy}>
-            {reset ? "Сохранить пароль и войти" : "Создать кабинет и войти"}
-            <ArrowRight size={17} />
-          </Button>
-        </form>
+            <Field
+              label="Код из письма"
+              hint="6 цифр. Не сообщайте этот код администратору или другим людям."
+            >
+              <input
+                name="code"
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                pattern="[0-9]{6}"
+                minLength={6}
+                maxLength={6}
+                required
+                value={code}
+                onChange={(e) =>
+                  setCode(e.target.value.replace(/\D/g, "").slice(0, 6))
+                }
+                placeholder="000000"
+              />
+            </Field>
+            <Field
+              label="Придумайте пароль"
+              hint="Минимум 10 символов. Используйте уникальный пароль."
+            >
+              <input
+                name="password"
+                type="password"
+                autoComplete="new-password"
+                minLength={10}
+                maxLength={128}
+                required
+              />
+            </Field>
+            <Field label="Повторите пароль">
+              <input
+                name="confirmation"
+                type="password"
+                autoComplete="new-password"
+                minLength={10}
+                maxLength={128}
+                required
+              />
+            </Field>
+            <Button className="full" busy={busy} disabled={code.length !== 6}>
+              {reset ? "Сохранить пароль и войти" : "Создать кабинет и войти"}
+              <ArrowRight size={17} />
+            </Button>
+          </form>
+        )}
         <p className="auth-note">
           Ссылка одноразовая.{" "}
           {reset

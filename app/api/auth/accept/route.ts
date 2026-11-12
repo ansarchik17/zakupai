@@ -4,12 +4,17 @@ import { authRepository, clientKey, sessionResponse } from "@/lib/auth";
 
 export const POST = api(async (request) => {
   const input = z
-    .object({ token: z.string().regex(/^[a-f0-9]{64}$/), password: z.string() })
+    .object({
+      token: z.string().regex(/^[a-f0-9]{64}$/),
+      password: z.string(),
+      code: z.string().regex(/^\d{6}$/),
+      challenge: z.string().regex(/^[a-f0-9]{64}$/),
+    })
     .strict()
     .parse(await body(request));
   const result = await authRepository().accept(
     input.token,
-    { password: input.password },
+    { password: input.password, code: input.code, challenge: input.challenge },
     clientKey(request),
   );
   return sessionResponse(request, result.token, { next: result.next });

@@ -7,6 +7,9 @@ import {
   randomToken,
   tokenHash,
   verifyPassword,
+  randomEmailCode,
+  emailCodeHash,
+  verifyEmailCode,
 } from "./auth-crypto.ts";
 
 const email = z
@@ -62,8 +65,19 @@ const publicUser = (u: StoredUser): User => ({
 
 export class AuthRepository {
   private db: Database;
-  constructor(db: Database) {
+  private emailSecret?: string;
+  constructor(db: Database, emailSecret?: string) {
     this.db = db;
+    this.emailSecret = emailSecret;
+  }
+
+  private codeSecret() {
+    if (!this.emailSecret || !/^[a-f0-9]{64}$/i.test(this.emailSecret))
+      throw new AppError(
+        "Подтверждение email пока не настроено. Обратитесь к администратору.",
+        503,
+      );
+    return this.emailSecret;
   }
 
   async bootstrap(config: { email?: string; hash?: string; name?: string }) {
@@ -121,7 +135,9 @@ export class AuthRepository {
       .first<{ attempts: number }>();
     if (!result || result.attempts > maximum)
       throw new AppError(
-        "Слишком много попыток. Попробуйте через 15 минут.",
+        seconds <= 60
+          ? "Повторно запросить код можно через минуту."
+          : "Слишком много попыток. Попробуйте через 15 минут.",
         429,
       );
   }
@@ -280,19 +296,49 @@ export class AuthRepository {
 
   async accept(token: string, input: unknown, client: string) {
     await this.limit(`accept-ip:${client}`, 20);
-    const data = z.object({ password: passwordInput }).strict().parse(input);
-    const link = await this.link(token),
-      password = await hashPassword(data.password),
-      time = now();
+    const data = z
+      .object({
+        password: passwordInput,
+        code: z.string().regex(/^\d{6}$/, "Введите код из 6 цифр"),
+        challenge: z.string().regex(/^[a-f0-9]{64}$/),
+      })
+      .strict()
+      .parse(input);
+    const link = await this.link(token);
+    const challengeHash = await this.checkEmailProof(
+      link.id,
+      data.challenge,
+      data.code,
+    );
+    const password = await hashPassword(data.password),
+      time = now(),
+      consumption = randomToken();
+    const consume = this.db
+      .prepare(
+        "UPDATE email_challenges SET consumed_at=?,consumption_id=? WHERE token_hash=? AND invitation_id=? AND consumed_at IS NULL AND delivered_at IS NOT NULL AND expires_at>? AND attempts<=5 AND EXISTS(SELECT 1 FROM invitations WHERE id=? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at>?)",
+      )
+      .bind(time, consumption, challengeHash, link.id, time, link.id, time);
     let userId: string;
     if (link.kind === "invite") {
       userId = crypto.randomUUID();
       const result = await this.db.batch([
+        consume,
         this.db
           .prepare(
-            "INSERT INTO users (id,email,name,password_hash,role,status,created_at) SELECT ?,?,?,?,'organizer','active',? WHERE EXISTS (SELECT 1 FROM invitations WHERE id=? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at>?) ON CONFLICT(email) DO NOTHING",
+            "INSERT INTO users (id,email,name,password_hash,role,status,created_at,email_verified_at) SELECT ?,?,?,?,'organizer','active',?,? WHERE EXISTS (SELECT 1 FROM invitations WHERE id=? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at>?) AND EXISTS(SELECT 1 FROM email_challenges WHERE token_hash=? AND consumption_id=?) ON CONFLICT(email) DO NOTHING",
           )
-          .bind(userId, link.email, link.name, password, time, link.id, time),
+          .bind(
+            userId,
+            link.email,
+            link.name,
+            password,
+            time,
+            time,
+            link.id,
+            time,
+            challengeHash,
+            consumption,
+          ),
         this.db
           .prepare(
             "INSERT INTO workspaces (id,owner_id,name,is_demo,created_at) SELECT ?,?,?,0,? WHERE EXISTS (SELECT 1 FROM users WHERE id=?)",
@@ -304,7 +350,7 @@ export class AuthRepository {
           )
           .bind(time, link.id, userId),
       ]);
-      if (!result[0].meta.changes)
+      if (!result[0].meta.changes || !result[1].meta.changes)
         throw new AppError("Приглашение уже использовано или отозвано", 409);
     } else {
       const user = await this.db
@@ -314,11 +360,20 @@ export class AuthRepository {
       if (!user) throw new AppError("Аккаунт недоступен", 403);
       userId = user.id;
       const result = await this.db.batch([
+        consume,
         this.db
           .prepare(
-            "UPDATE users SET password_hash=? WHERE id=? AND status='active' AND EXISTS(SELECT 1 FROM invitations WHERE id=? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at>?)",
+            "UPDATE users SET password_hash=?,email_verified_at=? WHERE id=? AND status='active' AND EXISTS(SELECT 1 FROM invitations WHERE id=? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at>?) AND EXISTS(SELECT 1 FROM email_challenges WHERE token_hash=? AND consumption_id=?)",
           )
-          .bind(password, userId, link.id, time),
+          .bind(
+            password,
+            time,
+            userId,
+            link.id,
+            time,
+            challengeHash,
+            consumption,
+          ),
         this.db
           .prepare(
             "UPDATE invitations SET accepted_at=? WHERE id=? AND changes()>0",
@@ -330,13 +385,102 @@ export class AuthRepository {
           )
           .bind(userId, link.id, time),
       ]);
-      if (!result[0].meta.changes)
+      if (!result[0].meta.changes || !result[1].meta.changes)
         throw new AppError("Ссылка уже использована или отозвана", 409);
     }
     return {
       ...(await this.newSession(userId)),
       next: link.kind === "reset" ? "/login" : "/",
     };
+  }
+
+  async requestEmailCode(
+    token: string,
+    client: string,
+    deliver: (message: {
+      email: string;
+      name: string;
+      code: string;
+    }) => Promise<void>,
+  ) {
+    const secret = this.codeSecret(),
+      link = await this.link(token);
+    await this.limit(`email-code-ip:${client}`, 20);
+    await this.limit(`email-code-email:${link.email}`, 5);
+    await this.limit(`email-code-cooldown:${link.id}`, 1, 60);
+    const challenge = randomToken(),
+      challengeHash = await tokenHash(challenge),
+      code = randomEmailCode();
+    const time = now(),
+      expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    await this.db
+      .prepare(
+        "INSERT INTO email_challenges (token_hash,invitation_id,code_hash,created_at,expires_at) VALUES (?,?,?,?,?)",
+      )
+      .bind(
+        challengeHash,
+        link.id,
+        await emailCodeHash(secret, link.id, challengeHash, code),
+        time,
+        expiresAt,
+      )
+      .run();
+    try {
+      await deliver({ email: link.email, name: link.name, code });
+      await this.db.batch([
+        this.db
+          .prepare(
+            "UPDATE email_challenges SET consumed_at=? WHERE invitation_id=? AND token_hash!=? AND consumed_at IS NULL",
+          )
+          .bind(now(), link.id, challengeHash),
+        this.db
+          .prepare(
+            "UPDATE email_challenges SET delivered_at=? WHERE token_hash=?",
+          )
+          .bind(now(), challengeHash),
+      ]);
+    } catch {
+      await this.db
+        .prepare("UPDATE email_challenges SET consumed_at=? WHERE token_hash=?")
+        .bind(now(), challengeHash)
+        .run();
+      throw new AppError(
+        "Не удалось отправить код на email. Повторите запрос через минуту.",
+        503,
+      );
+    }
+    return { challenge, expiresAt, resendAfterSeconds: 60 };
+  }
+
+  private async checkEmailProof(
+    invitationId: string,
+    challenge: string,
+    code: string,
+  ) {
+    const secret = this.codeSecret(),
+      challengeHash = await tokenHash(challenge);
+    const proof = await this.db
+      .prepare(
+        "UPDATE email_challenges SET attempts=attempts+1 WHERE token_hash=? AND invitation_id=? AND consumed_at IS NULL AND delivered_at IS NOT NULL AND expires_at>? AND attempts<5 RETURNING code_hash",
+      )
+      .bind(challengeHash, invitationId, now())
+      .first<{ code_hash: string }>();
+    if (!proof)
+      throw new AppError(
+        "Код истёк или число попыток исчерпано. Запросите новый код.",
+        400,
+      );
+    if (
+      !(await verifyEmailCode(
+        secret,
+        invitationId,
+        challengeHash,
+        code,
+        proof.code_hash,
+      ))
+    )
+      throw new AppError("Неверный код из письма", 400);
+    return challengeHash;
   }
 
   async revoke(admin: string, id: string) {

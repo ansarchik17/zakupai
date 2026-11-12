@@ -3,8 +3,16 @@
 ZAKUPAI_ADMIN_EMAIL=
 ZAKUPAI_ADMIN_NAME=Administrator
 ZAKUPAI_ADMIN_PASSWORD_HASH=
-# Optional email delivery. Production requires an HTTPS URL for the Node SMTP relay.
-SMTP_RELAY_URL=http://127.0.0.1:3025/send
-SMTP_RELAY_TOKEN=
+# SMTP settings and code-signing secret are prepared by npm run smtp:configure.
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USERNAME=
+SMTP_PASSWORD=
+SMTP_FROM_EMAIL=
+SMTP_FROM_NAME=ZakupAI
+SMTP_USE_TLS=true
+SMTP_IMPLICIT_TLS=false
+SMTP_SKIP_TLS_VERIFY=false
+EMAIL_CODE_SECRET=
 # Optional canonical origin for invitation links (no trailing path).
 ZAKUPAI_PUBLIC_URL=
