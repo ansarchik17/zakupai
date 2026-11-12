@@ -1,0 +1,10 @@
+# Runtime values for local development. Copy to .dev.vars; never commit real values.
+# npm run admin:configure writes these three keys using hidden JSON input.
+ZAKUPAI_ADMIN_EMAIL=
+ZAKUPAI_ADMIN_NAME=Administrator
+ZAKUPAI_ADMIN_PASSWORD_HASH=
+# Optional email delivery. Production requires an HTTPS URL for the Node SMTP relay.
+SMTP_RELAY_URL=http://127.0.0.1:3025/send
+SMTP_RELAY_TOKEN=
+# Optional canonical origin for invitation links (no trailing path).
+ZAKUPAI_PUBLIC_URL=

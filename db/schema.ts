@@ -149,3 +149,75 @@ export const activity = sqliteTable(
   },
   (t) => [index("activity_workspace_idx").on(t.workspaceId)],
 );
+
+export const users = sqliteTable(
+  "users",
+  {
+    id: text("id").primaryKey(),
+    email: text("email").notNull().unique(),
+    name: text("name").notNull(),
+    passwordHash: text("password_hash").notNull(),
+    role: text("role", { enum: ["admin", "organizer"] }).notNull(),
+    status: text("status", { enum: ["active", "disabled"] })
+      .notNull()
+      .default("active"),
+    createdAt: text("created_at").notNull(),
+    lastLoginAt: text("last_login_at"),
+  },
+  (t) => [
+    check("user_role_check", sql`${t.role} in ('admin','organizer')`),
+    check("user_status_check", sql`${t.status} in ('active','disabled')`),
+  ],
+);
+
+export const sessions = sqliteTable(
+  "sessions",
+  {
+    tokenHash: text("token_hash").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    expiresAt: text("expires_at").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => [
+    index("session_user_idx").on(t.userId),
+    index("session_expiry_idx").on(t.expiresAt),
+  ],
+);
+
+export const invitations = sqliteTable(
+  "invitations",
+  {
+    id: text("id").primaryKey(),
+    kind: text("kind", { enum: ["invite", "reset"] })
+      .notNull()
+      .default("invite"),
+    email: text("email").notNull(),
+    name: text("name").notNull(),
+    workspaceName: text("workspace_name").notNull(),
+    tokenHash: text("token_hash").notNull().unique(),
+    createdBy: text("created_by")
+      .notNull()
+      .references(() => users.id),
+    createdAt: text("created_at").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    acceptedAt: text("accepted_at"),
+    revokedAt: text("revoked_at"),
+    deliveryStatus: text("delivery_status").notNull().default("not_sent"),
+  },
+  (t) => [
+    index("invitation_email_idx").on(t.email),
+    check("invitation_kind_check", sql`${t.kind} in ('invite','reset')`),
+  ],
+);
+
+export const authLimits = sqliteTable(
+  "auth_limits",
+  {
+    key: text("key").primaryKey(),
+    attempts: integer("attempts").notNull(),
+    resetsAt: text("resets_at").notNull(),
+  },
+  (t) => [index("auth_limit_expiry_idx").on(t.resetsAt)],
+);

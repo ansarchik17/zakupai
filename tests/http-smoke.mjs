@@ -2,9 +2,18 @@ import assert from "node:assert/strict";
 const base = process.env.ZAKUPAI_TEST_URL || "http://127.0.0.1:5173";
 if (!["127.0.0.1", "localhost"].includes(new URL(base).hostname))
   throw new Error("Тест предназначен только для локального демо");
-const login = await fetch(base + "/signin-with-chatgpt?return_to=/", {
-  redirect: "manual",
+const email = process.env.ZAKUPAI_TEST_EMAIL,
+  password = process.env.ZAKUPAI_TEST_PASSWORD;
+if (!email || !password)
+  throw new Error(
+    "Укажите ZAKUPAI_TEST_EMAIL и ZAKUPAI_TEST_PASSWORD тестового аккаунта с демо-пространством",
+  );
+const login = await fetch(base + "/api/auth/login", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ email, password }),
 });
+assert.equal(login.status, 200, "Не удалось войти в тестовый аккаунт");
 const cookie = login.headers
   .getSetCookie()
   .map((c) => c.split(";")[0])

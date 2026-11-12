@@ -15,12 +15,12 @@ import {
   ExternalLink,
   HelpCircle,
   Layers3,
-  LogOut,
   Menu,
   Package,
   Plus,
   Search,
   Settings2,
+  ShieldCheck,
   ShoppingBag,
   SlidersHorizontal,
   Sparkles,
@@ -49,6 +49,7 @@ import {
 } from "./dashboard-forms";
 import { money, paymentStatus, procurement, statusLabels } from "@/lib/domain";
 import type { DashboardData } from "@/lib/domain";
+import { LogoutButton } from "./auth-forms";
 
 const views = [
   { id: "orders", label: "Заказы", icon: ClipboardList },
@@ -69,11 +70,11 @@ type FormKind = "campaign" | "product" | "order" | "help" | null;
 export function Dashboard({
   initial,
   userName,
-  localPreview = false,
+  userRole = "organizer",
 }: {
   initial: DashboardData | null;
   userName: string;
-  localPreview?: boolean;
+  userRole?: "admin" | "organizer";
 }) {
   const [data, setData] = useState(initial),
     [view, setView] = useState("orders"),
@@ -343,21 +344,21 @@ export function Dashboard({
             <HelpCircle size={19} />
             Как это работает
           </button>
+          {userRole === "admin" && (
+            <a className="nav-item" href="/admin">
+              <ShieldCheck size={19} />
+              Администрирование
+            </a>
+          )}
           <div className="profile">
             <span className="avatar">{userName.slice(0, 1).toUpperCase()}</span>
             <div>
               <strong>{userName}</strong>
-              <small>{localPreview ? "Локальная версия" : "Мой кабинет"}</small>
+              <small>
+                {userRole === "admin" ? "Администратор" : "Организатор"}
+              </small>
             </div>
-            {!localPreview ? (
-              <a
-                href="/signout-with-chatgpt?return_to=%2F"
-                target="_top"
-                aria-label="Выйти"
-              >
-                <LogOut size={16} />
-              </a>
-            ) : null}
+            <LogoutButton compact />
           </div>
         </div>
       </aside>

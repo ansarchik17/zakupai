@@ -1,21 +1,16 @@
-import { env } from "cloudflare:workers";
 import { ZodError } from "zod";
-import { getChatGPTUser } from "@/app/chatgpt-auth";
+import { currentUser } from "./auth";
+import { database } from "./database";
 import { AppError } from "./domain";
 import { Repository } from "./repository";
-import type { Database } from "./repository";
-
-export function database() {
-  if (!env.DB) throw new Error("DB binding missing");
-  return env.DB as unknown as Database;
-}
+export { database } from "./database";
 export function repository() {
   return new Repository(database());
 }
 export async function owner() {
-  const user = await getChatGPTUser();
+  const user = await currentUser();
   if (!user) throw new AppError("Войдите в кабинет организатора", 401);
-  return user.userId;
+  return user.id;
 }
 export async function body(request: Request) {
   if (Number(request.headers.get("content-length") || 0) > 32000)

@@ -25,7 +25,7 @@ const migration = spawnSync(
     "--config",
     "wrangler.local.json",
     "--persist-to",
-    ".wrangler/localhost",
+    process.env.ZAKUPAI_LOCAL_STATE_DIR || ".wrangler/localhost",
   ],
   { cwd: projectRoot, input: "y\n", stdio: ["pipe", "inherit", "inherit"] },
 );

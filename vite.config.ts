@@ -61,7 +61,12 @@ export default defineConfig(async ({ command }) => {
       ...(!localPreview ? [connectorPreview()] : []),
       cloudflare({
         ...(localPreview
-          ? { persistState: { path: ".wrangler/localhost" } }
+          ? {
+              persistState: {
+                path:
+                  process.env.ZAKUPAI_LOCAL_STATE_DIR || ".wrangler/localhost",
+              },
+            }
           : {}),
         viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
         inspectorPort: false,
