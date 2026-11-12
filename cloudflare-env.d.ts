@@ -8,6 +8,17 @@ declare namespace Cloudflare {
     ZAKUPAI_PUBLIC_URL?: string;
     SMTP_RELAY_URL?: string;
     SMTP_RELAY_TOKEN?: string;
+    SMTP_HOST?: string;
+    SMTP_PORT?: string;
+    SMTP_USERNAME?: string;
+    SMTP_USER?: string;
+    SMTP_PASSWORD?: string;
+    SMTP_FROM_EMAIL?: string;
+    SMTP_FROM_NAME?: string;
+    SMTP_USE_TLS?: string;
+    SMTP_IMPLICIT_TLS?: string;
+    SMTP_SKIP_TLS_VERIFY?: string;
+    EMAIL_CODE_SECRET?: string;
   }
 }
 
