@@ -41,6 +41,7 @@ export function AdminDashboard({
     [modal, setModal] = useState(false),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
+    [notice, setNotice] = useState(""),
     [link, setLink] = useState<LinkResult | null>(null),
     [copied, setCopied] = useState(false),
     [clock] = useState(() => Date.now());
@@ -54,6 +55,7 @@ export function AdminDashboard({
   const run = async (action: () => Promise<unknown>) => {
     setBusy(true);
     setError("");
+    setNotice("");
     try {
       await action();
       await refresh();
@@ -170,7 +172,8 @@ export function AdminDashboard({
                 <p>
                   Создавайте приглашения и передавайте персональные ссылки
                   организаторам. После подключения почты их можно будет
-                  отправлять письмом.
+                  отправлять письмом. Восстановление паролей доступно только
+                  через письмо владельцу аккаунта.
                 </p>
               </div>
             </div>
@@ -185,6 +188,15 @@ export function AdminDashboard({
               >
                 <X size={16} />
               </button>
+            </div>
+          )}
+          {notice && (
+            <div
+              className="info-banner"
+              role="status"
+              style={{ marginBottom: 20 }}
+            >
+              {notice}
             </div>
           )}
           <section className="panel">
@@ -268,17 +280,27 @@ export function AdminDashboard({
                                 </Button>
                                 <button
                                   className="icon-button"
-                                  aria-label={`Восстановить пароль ${u.name}`}
-                                  disabled={busy || u.status !== "active"}
+                                  aria-label={`Отправить письмо восстановления ${u.name}`}
+                                  title={
+                                    mailConfigured
+                                      ? "Письмо придёт только владельцу аккаунта"
+                                      : "Для восстановления пароля подключите почту"
+                                  }
+                                  disabled={
+                                    busy ||
+                                    u.status !== "active" ||
+                                    !mailConfigured
+                                  }
                                   onClick={() =>
-                                    run(async () =>
-                                      showLink(
-                                        await request<LinkResult>(
-                                          `/api/admin/users/${u.id}/reset`,
-                                          "POST",
-                                        ),
-                                      ),
-                                    )
+                                    run(async () => {
+                                      await request(
+                                        `/api/admin/users/${u.id}/reset`,
+                                        "POST",
+                                      );
+                                      setNotice(
+                                        `Письмо для восстановления пароля отправлено на ${u.email}. Организатор самостоятельно задаст новый пароль.`,
+                                      );
+                                    })
                                   }
                                 >
                                   <KeyRound size={17} />
@@ -484,7 +506,7 @@ export function AdminDashboard({
         </Modal>
       )}
       {link && (
-        <Modal title="Ссылка готова" onClose={() => setLink(null)}>
+        <Modal title="Приглашение готово" onClose={() => setLink(null)}>
           <div className="modal-form">
             <div
               className={

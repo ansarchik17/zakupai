@@ -24,6 +24,24 @@ async function fixture() {
   return { ...f, auth, admin, invite };
 }
 
+async function deliveredReset(
+  auth: AuthRepository,
+  admin: string,
+  user: string,
+) {
+  let token = "",
+    recipient = "";
+  const response = await auth.sendPasswordReset(
+    admin,
+    user,
+    async (message) => {
+      token = message.token;
+      recipient = message.email;
+    },
+  );
+  return { token, recipient, response };
+}
+
 test("администратор сохраняет прежнее пространство без изменения заказов и не перехватывает действующие аккаунты", async () => {
   const f = await fixture(),
     repo = new Repository(f.db);
@@ -147,7 +165,7 @@ test("отключение немедленно отзывает сессии и
     link = await f.invite(),
     accepted = await f.auth.accept(link.token, { password }, "test"),
     user = (await f.auth.session(accepted.token))!;
-  const reset = await f.auth.resetLink(f.admin.user.id, user.id);
+  const reset = await deliveredReset(f.auth, f.admin.user.id, user.id);
   await f.auth.setAccess(f.admin.user.id, user.id, false);
   assert.equal(await f.auth.session(accepted.token), null);
   await assert.rejects(() =>
@@ -169,7 +187,10 @@ test("восстановление меняет пароль, завершает
     invite = await f.invite(),
     account = await f.auth.accept(invite.token, { password }, "test"),
     user = (await f.auth.session(account.token))!;
-  const reset = await f.auth.resetLink(f.admin.user.id, user.id);
+  const reset = await deliveredReset(f.auth, f.admin.user.id, user.id);
+  assert.equal(reset.recipient, user.email);
+  assert.deepEqual(reset.response, { delivery: "sent" });
+  assert.equal(JSON.stringify(reset.response).includes(reset.token), false);
   const changed = await f.auth.accept(
     reset.token,
     { password: "NewPassword+1234" },
@@ -199,5 +220,78 @@ test("ограничение попыток сохраняется в базе �
   );
   f.sqlite.prepare("UPDATE auth_limits SET resets_at='2000-01-01'").run();
   await f.auth.limit("sample", 2);
+  f.sqlite.close();
+});
+
+test("администратор не входит с собственным паролем в аккаунт организатора и не получает ссылку восстановления", async () => {
+  const f = await fixture(),
+    invitation = await f.invite();
+  const ownerPassword = "OwnerOnlyPassword+123";
+  const account = await f.auth.accept(
+    invitation.token,
+    { password: ownerPassword },
+    "test",
+  );
+  const organizer = (await f.auth.session(account.token))!;
+  await assert.rejects(() =>
+    f.auth.login({ email: organizer.email, password }, "test"),
+  );
+  await assert.rejects(() => f.invite());
+  await assert.rejects(() =>
+    f.auth.sendPasswordReset(organizer.id, f.admin.user.id, async () =>
+      assert.fail(
+        "Организатор не может запросить восстановление чужого аккаунта",
+      ),
+    ),
+  );
+  const delivered = await deliveredReset(f.auth, f.admin.user.id, organizer.id);
+  assert.equal(delivered.recipient, organizer.email);
+  assert.deepEqual(delivered.response, { delivery: "sent" });
+  assert.equal("token" in delivered.response, false);
+  assert.equal("url" in delivered.response, false);
+  assert.ok(await f.auth.session(account.token));
+  assert.ok(
+    await f.auth.login(
+      { email: organizer.email, password: ownerPassword },
+      "test",
+    ),
+  );
+  f.sqlite.close();
+});
+
+test("ошибка отправки письма отзывает восстановление и сохраняет действующий пароль", async () => {
+  const f = await fixture(),
+    invitation = await f.invite();
+  const account = await f.auth.accept(invitation.token, { password }, "test"),
+    organizer = (await f.auth.session(account.token))!;
+  let undeliveredToken = "";
+  await assert.rejects(() =>
+    f.auth.sendPasswordReset(f.admin.user.id, organizer.id, async (message) => {
+      undeliveredToken = message.token;
+      throw new Error("Transport unavailable");
+    }),
+  );
+  await assert.rejects(() => f.auth.link(undeliveredToken));
+  assert.ok(await f.auth.session(account.token));
+  assert.ok(await f.auth.login({ email: organizer.email, password }, "test"));
+  f.sqlite.close();
+});
+
+test("прежние ручные ссылки восстановления без отправки владельцу больше не принимаются", async () => {
+  const f = await fixture(),
+    invitation = await f.invite();
+  const account = await f.auth.accept(invitation.token, { password }, "test"),
+    organizer = (await f.auth.session(account.token))!;
+  const old = await deliveredReset(f.auth, f.admin.user.id, organizer.id);
+  f.sqlite
+    .prepare(
+      "UPDATE invitations SET delivery_status='not_sent' WHERE kind='reset'",
+    )
+    .run();
+  await assert.rejects(() => f.auth.link(old.token));
+  await assert.rejects(() =>
+    f.auth.accept(old.token, { password: "AnotherPassword+123" }, "test"),
+  );
+  assert.ok(await f.auth.login({ email: organizer.email, password }, "test"));
   f.sqlite.close();
 });

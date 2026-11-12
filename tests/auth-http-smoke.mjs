@@ -73,8 +73,7 @@ assert.ok(
 const overview = await api("/api/admin", { cookie: admin });
 assert.equal(JSON.stringify(overview.body).includes("password_hash"), false);
 const email = `smoke-${crypto.randomUUID()}@example.test`,
-  password = "SmokePassword+123",
-  newPassword = "ChangedPassword+123";
+  password = "SmokePassword+123";
 const created = await api("/api/admin/invitations", {
   method: "POST",
   cookie: admin,
@@ -94,6 +93,11 @@ const accepted = await api("/api/auth/accept", {
   data: { token, password },
 });
 const organizer = cookieOf(accepted.response);
+await api("/api/auth/login", {
+  method: "POST",
+  data: { email, password: credentials.password },
+  status: 401,
+});
 await api("/api/admin", { cookie: organizer, status: 403 });
 await api("/api/admin/invitations", {
   method: "POST",
@@ -172,13 +176,39 @@ await api(`/api/orders/${order.id}/payments`, {
 const reset = await api(`/api/admin/users/${user.id}/reset`, {
   method: "POST",
   cookie: admin,
+  status: 503,
 });
-const resetToken = new URL(reset.body.url).pathname.split("/").at(-1);
-const changed = await api("/api/auth/accept", {
+assert.equal("url" in reset.body, false);
+assert.equal("token" in reset.body, false);
+await api(`/api/admin/users/${user.id}`, {
+  method: "PATCH",
+  cookie: admin,
+  data: { email: credentials.email },
+  status: 400,
+});
+await api(`/api/admin/users/${user.id}`, {
+  method: "PATCH",
+  cookie: admin,
+  data: { password: credentials.password },
+  status: 400,
+});
+await api("/api/admin/invitations", {
   method: "POST",
-  data: { token: resetToken, password: newPassword },
+  cookie: admin,
+  data: {
+    email,
+    name: "Нельзя заменить аккаунт",
+    workspaceName: "Тест",
+    sendEmail: false,
+  },
+  status: 409,
 });
-const changedSession = cookieOf(changed.response);
+await api("/api/workspace", { cookie: organizer });
+await api(`/api/admin/users/${user.id}`, {
+  method: "PATCH",
+  cookie: admin,
+  data: { active: false },
+});
 await api("/api/workspace", { cookie: organizer, status: 401 });
 await api("/api/auth/login", {
   method: "POST",
@@ -188,22 +218,11 @@ await api("/api/auth/login", {
 await api(`/api/admin/users/${user.id}`, {
   method: "PATCH",
   cookie: admin,
-  data: { active: false },
-});
-await api("/api/workspace", { cookie: changedSession, status: 401 });
-await api("/api/auth/login", {
-  method: "POST",
-  data: { email, password: newPassword },
-  status: 401,
-});
-await api(`/api/admin/users/${user.id}`, {
-  method: "PATCH",
-  cookie: admin,
   data: { active: true },
 });
 await api("/api/auth/login", {
   method: "POST",
-  data: { email, password: newPassword },
+  data: { email, password },
 });
 const revocable = (
   await api("/api/admin/invitations", {

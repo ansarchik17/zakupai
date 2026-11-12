@@ -266,7 +266,7 @@ export class AuthRepository {
       );
     const link = await this.db
       .prepare(
-        "SELECT id,kind,email,name,workspace_name,expires_at,accepted_at,revoked_at FROM invitations WHERE token_hash=? AND expires_at>? AND accepted_at IS NULL AND revoked_at IS NULL",
+        "SELECT id,kind,email,name,workspace_name,expires_at,accepted_at,revoked_at FROM invitations WHERE token_hash=? AND expires_at>? AND accepted_at IS NULL AND revoked_at IS NULL AND (kind='invite' OR delivery_status='sent')",
       )
       .bind(await tokenHash(token), now())
       .first<AccessLink>();
@@ -368,14 +368,39 @@ export class AuthRepository {
       throw new AppError("Организатор не найден", 404);
   }
 
-  async resetLink(admin: string, id: string) {
+  async sendPasswordReset(
+    admin: string,
+    id: string,
+    deliver: (message: {
+      email: string;
+      name: string;
+      token: string;
+    }) => Promise<void>,
+  ) {
     await this.requireAdmin(admin);
     const user = await this.db
       .prepare("SELECT email,name FROM users WHERE id=? AND status='active'")
       .bind(id)
       .first<{ email: string; name: string }>();
     if (!user) throw new AppError("Аккаунт недоступен", 404);
-    return this.createLink(admin, "reset", { ...user, workspaceName: "" });
+    await this.limit(`password-reset:${user.email}`, 3);
+    const link = await this.createLink(admin, "reset", {
+      ...user,
+      workspaceName: "",
+    });
+    try {
+      // The delivery adapter receives the token; administrators never receive it.
+      await deliver({ email: user.email, name: user.name, token: link.token });
+      await this.delivery(link.id, "sent");
+    } catch {
+      await this.revoke(admin, link.id);
+      await this.delivery(link.id, "failed");
+      throw new AppError(
+        "Не удалось отправить письмо восстановления. Повторите отправку позже.",
+        502,
+      );
+    }
+    return { delivery: "sent" as const };
   }
 
   async delivery(id: string, status: "sent" | "failed") {
