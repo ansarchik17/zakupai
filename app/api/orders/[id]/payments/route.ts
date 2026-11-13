@@ -4,7 +4,6 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> },
 ) {
   return api(async (r) => {
-    await repository().pay(await owner(), (await params).id, await body(r));
-    return { ok: true };
+    return repository().pay(await owner(), (await params).id, await body(r));
   })(request);
 }

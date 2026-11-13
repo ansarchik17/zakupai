@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
   ArrowDownToLine,
@@ -48,8 +48,9 @@ import {
   localDateTime,
 } from "./dashboard-forms";
 import { money, paymentStatus, procurement, statusLabels } from "@/lib/domain";
-import type { DashboardData } from "@/lib/domain";
+import type { DashboardData, PaymentReceipt } from "@/lib/domain";
 import { LogoutButton } from "./auth-forms";
+import { OrderCustomerLink } from "./order-customer-link";
 
 const views = [
   { id: "orders", label: "Заказы", icon: ClipboardList },
@@ -67,6 +68,7 @@ const subtitles: Record<string, string> = {
   settings: "Условия вашей группы и способы получения.",
 };
 type FormKind = "campaign" | "product" | "order" | "help" | null;
+type CreatedOrder = { id: string; token: string; number: string };
 export function Dashboard({
   initial,
   userName,
@@ -87,7 +89,11 @@ export function Dashboard({
     [error, setError] = useState(""),
     [notice, setNotice] = useState(""),
     [menu, setMenu] = useState(false),
-    [workspaceName, setWorkspaceName] = useState("");
+    [workspaceName, setWorkspaceName] = useState(""),
+    [createdOrder, setCreatedOrder] = useState<CreatedOrder | null>(null),
+    [receiptOpen, setReceiptOpen] = useState(false);
+  const readGeneration = useRef(0);
+  const mutationPending = useRef(false);
   useEffect(() => {
     const value = new URL(location.href).searchParams.get("view");
     if (value && [...views.map((v) => v.id), "settings"].includes(value))
@@ -98,16 +104,16 @@ export function Dashboard({
     const id = setTimeout(() => setNotice(""), 4000);
     return () => clearTimeout(id);
   }, [notice]);
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
+    const generation = ++readGeneration.current;
     const result = await request<{ data: DashboardData }>("/api/workspace");
-    setData(result.data);
-  };
+    if (generation === readGeneration.current) setData(result.data);
+  }, []);
+  const hasWorkspace = Boolean(data);
   useEffect(() => {
-    if (!data || busy) return;
+    if (!hasWorkspace || busy) return;
     const update = () => {
-      request<{ data: DashboardData }>("/api/workspace")
-        .then((result) => setData(result.data))
-        .catch(() => {});
+      if (!mutationPending.current) void refresh().catch(() => {});
     };
     const timer = setInterval(update, 15000);
     window.addEventListener("focus", update);
@@ -115,22 +121,32 @@ export function Dashboard({
       clearInterval(timer);
       window.removeEventListener("focus", update);
     };
-  }, [Boolean(data), busy]);
-  const run = async (
-    action: () => Promise<unknown>,
+  }, [hasWorkspace, busy, refresh]);
+  const run = async <T,>(
+    action: () => Promise<T>,
     message = "Изменения сохранены",
+    onCommitted?: (result: T) => void,
   ) => {
+    if (mutationPending.current) return false;
+    mutationPending.current = true;
+    ++readGeneration.current;
     setBusy(true);
     setError("");
     try {
-      await action();
-      await refresh();
+      const result = await action();
+      onCommitted?.(result);
       setNotice(message);
+      try {
+        await refresh();
+      } catch {
+        setError("Действие сохранено. Не удалось обновить список — обновите страницу, когда связь восстановится.");
+      }
       return true;
     } catch (e) {
       setError(e instanceof Error ? e.message : "Не удалось сохранить");
       return false;
     } finally {
+      mutationPending.current = false;
       setBusy(false);
     }
   };
@@ -1145,8 +1161,13 @@ export function Dashboard({
           onSubmit={async (d) => {
             if (
               await run(
-                () => request("/api/orders", "POST", d),
+                () => request<CreatedOrder>("/api/orders", "POST", d),
                 "Заказ добавлен",
+                (result) => {
+                  setCreatedOrder(result);
+                  setReceiptOpen(true);
+                  setModal(null);
+                },
               )
             )
               setModal(null);
@@ -1180,6 +1201,18 @@ export function Dashboard({
           </div>
         </Modal>
       ) : null}
+      {receiptOpen && createdOrder ? (
+        <Modal title={`Заказ №${createdOrder.number} добавлен`} onClose={() => {
+          if (!busy) setReceiptOpen(false);
+        }}>
+          <div className="modal-form">
+            <p>Отправьте покупателю персональную ссылку на его заказ.</p>
+            <OrderCustomerLink orderId={createdOrder.id} initialPath={`/order/${createdOrder.token}`} />
+            {error ? <p className="error" role="alert">{error}</p> : null}
+            <Button type="button" busy={busy} onClick={() => setReceiptOpen(false)}>Готово</Button>
+          </div>
+        </Modal>
+      ) : null}
       {selected ? (
         <OrderDetails
           key={selected.id}
@@ -1196,10 +1229,16 @@ export function Dashboard({
           }}
           busy={busy}
           error={error}
+          customerPath={createdOrder?.id === selected.id ? `/order/${createdOrder.token}` : undefined}
           onPay={(d) =>
             run(
-              () => request(`/api/orders/${selected.id}/payments`, "POST", d),
+              () => request<PaymentReceipt>(`/api/orders/${selected.id}/payments`, "POST", d),
               "Оплата подтверждена",
+              (receipt) => setData((current) => current ? {
+                ...current,
+                orders: current.orders.map((order) => order.id === receipt.orderId
+                  ? { ...order, paid: Math.max(order.paid, receipt.paid) } : order),
+              } : current),
             )
           }
           onStatus={(status) =>

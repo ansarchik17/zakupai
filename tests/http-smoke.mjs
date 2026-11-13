@@ -87,6 +87,15 @@ assert.equal(
 );
 const statusPage = await api(`/order/${order.token}`);
 assert.ok(statusPage.includes(order.number));
+const manual = await api("/api/orders", {
+  method: "POST", auth: true,
+  body: { ...input, customer: "Ручной HTTP заказ", idempotencyKey: crypto.randomUUID() },
+});
+await api(`/api/orders/${manual.id}/link`, { status: 401 });
+const link = await api(`/api/orders/${manual.id}/link`, { auth: true });
+assert.equal(link.path, `/order/${manual.token}`);
+assert.ok((await api(link.path)).includes(manual.number));
+assert.equal((await api(`/api/orders/${manual.id}/link`, { auth: true })).path, link.path);
 await api(`/api/order/${order.token}`, { method: "POST" });
 let details = await api(`/api/order/${order.token}`);
 assert.equal(details.order.paid, 0);
@@ -97,18 +106,26 @@ await api(`/api/orders/${order.id}/payments`, {
   body: payment,
   status: 401,
 });
-await api(`/api/orders/${order.id}/payments`, {
+const firstPayment = await api(`/api/orders/${order.id}/payments`, {
   method: "POST",
   auth: true,
   body: payment,
 });
-await api(`/api/orders/${order.id}/payments`, {
+assert.equal(firstPayment.paid, 1000);
+const replayPayment = await api(`/api/orders/${order.id}/payments`, {
   method: "POST",
   auth: true,
   body: payment,
 });
+assert.equal(replayPayment.id, firstPayment.id);
+const secondPayment = await api(`/api/orders/${order.id}/payments`, {
+  method: "POST", auth: true,
+  body: { ...payment, idempotencyKey: crypto.randomUUID() },
+});
+assert.notEqual(secondPayment.id, firstPayment.id);
+assert.equal(secondPayment.paid, 2000);
 details = await api(`/api/order/${order.token}`);
-assert.equal(details.order.paid, 1000);
+assert.equal(details.order.paid, 2000);
 assert.equal(details.order.total, p.price * 2);
 await api(`/api/orders/${order.id}`, {
   method: "PATCH",

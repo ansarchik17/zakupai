@@ -61,7 +61,10 @@ export function Modal({
     <dialog
       ref={ref}
       className={`modal ${wide ? "wide" : ""}`}
-      onCancel={onClose}
+      onCancel={(e) => {
+        e.preventDefault();
+        onClose();
+      }}
       onClick={(e) => {
         if (e.target === e.currentTarget) {
           const r = ref.current!.getBoundingClientRect();

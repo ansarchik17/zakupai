@@ -220,6 +220,9 @@ const order = (
   })
 ).body;
 assert.equal((await api(`/api/order/${order.token}`)).body.order.total, 10000);
+assert.equal((await api(`/api/orders/${order.id}/link`, { cookie: organizer })).body.path, `/order/${order.token}`);
+await api(`/api/orders/${order.id}/link`, { status: 401 });
+await api(`/api/orders/${order.id}/link`, { cookie: admin, status: 404 });
 assert.equal(
   (await api("/api/workspace", { cookie: admin })).body.data?.orders.some(
     (o) => o.id === order.id,

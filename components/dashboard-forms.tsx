@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { ArrowRight, Check, ChevronRight, Search } from "lucide-react";
 import { Button, Modal, Field, Empty, Photo, dateText } from "./primitives";
 import {
@@ -10,6 +10,7 @@ import {
   statusLabels,
 } from "@/lib/domain";
 import type { DashboardData, Order } from "@/lib/domain";
+import { OrderCustomerLink } from "./order-customer-link";
 
 export const initials = (name: string) =>
   name
@@ -280,6 +281,7 @@ export function OrderDetails({
   error,
   onPay,
   onStatus,
+  customerPath,
 }: {
   order: Order;
   campaignName: string;
@@ -288,13 +290,15 @@ export function OrderDetails({
   error: string;
   onPay: (d: unknown) => Promise<boolean>;
   onStatus: (s: string) => Promise<boolean>;
+  customerPath?: string;
 }) {
-  const [amount, setAmount] = useState(order.total - order.paid),
-    attempt = useRef<{ amount: number; key: string } | null>(null);
-  useEffect(
-    () => setAmount(order.total - order.paid),
-    [order.paid, order.total],
-  );
+  const remaining = order.total - order.paid;
+  const [draft, setDraft] = useState({ paid: order.paid, total: order.total, amount: String(remaining) });
+  const amountValue = draft.paid === order.paid && draft.total === order.total ? draft.amount : String(remaining);
+  const amount = Number(amountValue);
+  const attempt = useRef<{ amount: number; key: string } | null>(null);
+  const submitting = useRef(false);
+  const [paying, setPaying] = useState(false);
   return (
     <Modal title={`Заказ №${order.number}`} onClose={onClose}>
       <div className="order-details">
@@ -354,9 +358,18 @@ export function OrderDetails({
             className="payment-form"
             onSubmit={async (e) => {
               e.preventDefault();
+              if (busy || submitting.current) return;
+              submitting.current = true;
+              setPaying(true);
               if (attempt.current?.amount !== amount)
                 attempt.current = { amount, key: crypto.randomUUID() };
-              await onPay({ amount, idempotencyKey: attempt.current.key });
+              try {
+                if (await onPay({ amount, idempotencyKey: attempt.current.key }))
+                  attempt.current = null;
+              } finally {
+                submitting.current = false;
+                setPaying(false);
+              }
             }}
           >
             <Field label="Подтвердить поступление, ₸">
@@ -366,18 +379,20 @@ export function OrderDetails({
                 min={1}
                 max={order.total - order.paid}
                 step={1}
-                value={amount}
-                onChange={(e) => setAmount(Number(e.target.value))}
+                value={amountValue}
+                disabled={busy || paying}
+                onChange={(e) => setDraft({ paid: order.paid, total: order.total, amount: e.target.value })}
                 required
               />
             </Field>
-            <Button busy={busy}>
+            <Button busy={busy || paying}>
               <Check size={17} />
               Подтвердить оплату
             </Button>
             <small>Отметка фиксирует сверку поступления организатором.</small>
           </form>
         ) : null}
+        <OrderCustomerLink orderId={order.id} initialPath={customerPath} />
         <div className="fulfillment">
           <span className="muted">Выполнение заказа</span>
           <strong>{statusLabels[order.status]}</strong>

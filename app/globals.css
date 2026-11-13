@@ -1180,6 +1180,17 @@ td small {
   align-items: center;
   gap: 10px;
 }
+.customer-order-link {
+  display: grid;
+  gap: 12px;
+  margin: 20px 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  min-width: 0;
+}
+.customer-order-link input { width: 100%; min-width: 0; }
+.link-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .details-customer > div {
   flex: 1;
 }

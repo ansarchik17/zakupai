@@ -315,3 +315,64 @@ test("повторяющиеся строки не обходят огранич
   assert.equal(f.sqlite.prepare("SELECT COUNT(*) n FROM orders").get()!.n, 0);
   f.sqlite.close();
 });
+
+test("равные частичные оплаты имеют разные квитанции, повтор возвращает ту же", async () => {
+  const f = await fixture(), o = await f.repo.createOrder(f.input());
+  try {
+    const input = { amount: 5000, idempotencyKey: crypto.randomUUID() };
+    const first = await f.repo.pay("owner-a", o.id, input);
+    assert.deepEqual({ ...first }, { id: first.id, orderId: o.id, amount: 5000, paid: 5000, total: 29000 });
+    assert.deepEqual(await f.repo.pay("owner-a", o.id, input), first);
+    const second = await f.repo.pay("owner-a", o.id, { ...input, idempotencyKey: crypto.randomUUID() });
+    assert.notEqual(first.id, second.id);
+    assert.equal(second.paid, 10000);
+    const replay = await f.repo.pay("owner-a", o.id, input);
+    assert.equal(replay.id, first.id);
+    assert.equal(replay.paid, 10000);
+    await assert.rejects(() => f.repo.pay("owner-a", o.id, { ...input, amount: 6000 }));
+    assert.equal(f.sqlite.prepare("SELECT COUNT(*) n FROM payments").get()!.n, 2);
+    assert.equal(f.sqlite.prepare("SELECT COUNT(*) n FROM activity WHERE action LIKE 'Подтверждена оплата%'").get()!.n, 2);
+  } finally { f.sqlite.close(); }
+});
+
+test("ссылка ручного заказа доступна владельцу после перезагрузки, чужому пространству — нет", async () => {
+  const f = await fixture();
+  try {
+    const o = await f.repo.createOrder(f.input(), "owner-a");
+    assert.equal((await f.repo.dashboard("owner-a"))!.orders[0].source, "manual");
+    const reloaded = new Repository(f.db);
+    assert.deepEqual(await reloaded.orderLink("owner-a", o.id), { path: `/order/${o.token}`, number: o.number });
+    await f.repo.createWorkspace("owner-b", { name: "Другая группа" });
+    await assert.rejects(() => reloaded.orderLink("owner-b", o.id), { status: 404 });
+    await assert.rejects(() => reloaded.orderLink("owner-a", crypto.randomUUID()), { status: 404 });
+    assert.equal((await reloaded.publicOrder(o.token)).order.number, o.number);
+    assert.equal("public_token" in (await reloaded.dashboard("owner-a"))!.orders[0], false);
+  } finally { f.sqlite.close(); }
+});
+
+test("конкурентное открытие не возобновляет завершённую закупку", async () => {
+  const f = await fixture();
+  try {
+    const results = await Promise.allSettled([
+      f.repo.setCampaign("owner-a", f.campaignId, "completed"),
+      f.repo.setCampaign("owner-a", f.campaignId, "open"),
+    ]);
+    assert.equal(results[0].status, "fulfilled");
+    assert.equal(results[1].status, "rejected");
+    assert.equal((await f.repo.dashboard("owner-a"))!.campaigns[0].status, "completed");
+    await assert.rejects(() => f.repo.setCampaign("owner-a", f.campaignId, "closed"));
+  } finally { f.sqlite.close(); }
+});
+
+test("конкурентные оплата и отмена сохраняют согласованное состояние", async () => {
+  const f = await fixture(), o = await f.repo.createOrder(f.input());
+  try {
+    const results = await Promise.allSettled([
+      f.repo.pay("owner-a", o.id, { amount: 1000, idempotencyKey: crypto.randomUUID() }),
+      f.repo.setOrderStatus("owner-a", o.id, { expectedStatus: "new", status: "cancelled" }),
+    ]);
+    assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
+    const { order } = await f.repo.publicOrder(o.token);
+    assert.ok((order.status === "cancelled" && order.paid === 0) || (order.status === "new" && order.paid === 1000));
+  } finally { f.sqlite.close(); }
+});

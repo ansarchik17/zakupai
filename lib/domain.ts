@@ -197,6 +197,13 @@ export type Item = {
   unit_price: number;
   image: string;
 };
+export type PaymentReceipt = {
+  id: string;
+  orderId: string;
+  amount: number;
+  paid: number;
+  total: number;
+};
 export type Order = {
   id: string;
   campaign_id: string;

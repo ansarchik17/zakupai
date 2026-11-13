@@ -17,6 +17,7 @@ import type {
   Order,
   Item,
   DashboardData,
+  PaymentReceipt,
 } from "./domain.ts";
 
 type Statement = {
@@ -118,18 +119,22 @@ export class Repository {
     if (!c) throw new AppError("Закупка не найдена", 404);
     if (status === "open" && Date.parse(c.closes_at) <= Date.now())
       throw new AppError("Срок сбора уже закончился. Создайте новую закупку.");
-    if (c.status === "completed") throw new AppError("Закупка уже завершена");
+    if (c.status === "completed") throw new AppError("Закупка уже завершена", 409);
     const changed = await this.db
       .prepare(
-        "UPDATE campaigns SET status=? WHERE id=? AND workspace_id=? AND (?!='completed' OR NOT EXISTS (SELECT 1 FROM orders WHERE campaign_id=? AND status NOT IN ('delivered','cancelled')))",
+        "UPDATE campaigns SET status=? WHERE id=? AND workspace_id=? AND status!='completed' AND (?!='completed' OR NOT EXISTS (SELECT 1 FROM orders WHERE campaign_id=? AND status NOT IN ('delivered','cancelled')))",
       )
       .bind(status, id, w.id, status, id)
       .run();
-    if (!changed.meta.changes)
+    if (!changed.meta.changes) {
+      const current = await this.db.prepare("SELECT status FROM campaigns WHERE id=? AND workspace_id=?")
+        .bind(id, w.id).first<{ status: string }>();
+      if (current?.status === "completed") throw new AppError("Закупка уже завершена", 409);
       throw new AppError(
         "Сначала выдайте или отмените все заказы закупки",
         409,
       );
+    }
   }
   async createProduct(owner: string, input: unknown) {
     const w = await this.requireWorkspace(owner),
@@ -393,6 +398,15 @@ export class Repository {
       throw new AppError("Запрос уже использован", 409);
     return { id: result.id, token: result.public_token, number: result.number };
   }
+  async orderLink(owner: string, orderId: string) {
+    const w = await this.requireWorkspace(owner);
+    const order = await this.db
+      .prepare("SELECT public_token,number FROM orders WHERE id=? AND workspace_id=?")
+      .bind(orderId, w.id)
+      .first<{ public_token: string; number: string }>();
+    if (!order) throw new AppError("Заказ не найден", 404);
+    return { path: `/order/${order.public_token}`, number: order.number };
+  }
   async publicOrder(publicToken: string) {
     if (!/^[a-f0-9]{64}$/.test(publicToken))
       throw new AppError("Заказ не найден", 404);
@@ -440,7 +454,7 @@ export class Repository {
     if (previous) {
       if (previous.amount !== d.amount)
         throw new AppError("Запрос уже использован", 409);
-      return;
+      return this.paymentReceipt(orderId, d.idempotencyKey);
     }
     const id = uuid(),
       time = now();
@@ -487,6 +501,14 @@ export class Repository {
           409,
         );
     }
+    return this.paymentReceipt(orderId, d.idempotencyKey);
+  }
+  private async paymentReceipt(orderId: string, key: string): Promise<PaymentReceipt> {
+    const receipt = await this.db.prepare(
+      "SELECT p.id,p.order_id AS orderId,p.amount,o.total,(SELECT COALESCE(SUM(amount),0) FROM payments WHERE order_id=o.id) AS paid FROM payments p JOIN orders o ON o.id=p.order_id WHERE p.order_id=? AND p.idempotency_key=?",
+    ).bind(orderId, key).first<PaymentReceipt>();
+    if (!receipt) throw new AppError("Не удалось получить подтверждение оплаты", 409);
+    return receipt;
   }
   async setOrderStatus(owner: string, orderId: string, input: unknown) {
     const w = await this.requireWorkspace(owner),
